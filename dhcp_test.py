@@ -1,16 +1,15 @@
 #!/usr/bin/python3
 # -*- coding: UTF-8 -*-
-# test of DHCP server 
+# send a DHCP request to DHCP server to see if it's up and running
 # by houspi@gmail.com
 # TODO
-#   get broadcast address from network environment
-#   calc time working
+#   get broadcast address from the network environment
 #   ? validate cli parameters
-
 
 import os
 import sys
 import argparse
+from time import time
 import re
 import socket
 import struct
@@ -58,9 +57,9 @@ class DHCPDiscover:
         return packet
 
 class DHCPOffer:
-    def __init__(self, data, transID):
-        self.data = data
-        self.transID = transID
+    def __init__(self):
+        self.data = b''
+        self.transID = b''
         self.offerIP = ''
         self.nextServerIP = ''
         self.DHCPServerIdentifier = ''
@@ -68,29 +67,32 @@ class DHCPOffer:
         self.router = ''
         self.subnetMask = ''
         self.DNS = []
+        
+    def setData(self, data, transID):
+        self.data = data
+        self.transID = transID
         self.unpack()
-    
+
     def unpack(self):
         if self.data[4:8] == self.transID :
             self.offerIP = '.'.join(map(lambda x:str(x), data[16:20]))
             self.nextServerIP = '.'.join(map(lambda x:str(x), data[20:24])) 
             self.DHCPServerIdentifier = '.'.join(map(lambda x:str(x), data[245:249]))
             self.leaseTime = str(struct.unpack('!L', data[251:255])[0])
-            self.router = '.'.join(map(lambda x:str(x), data[257:261]))
-            self.subnetMask = '.'.join(map(lambda x:str(x), data[263:267]))
+            self.subnetMask = '.'.join(map(lambda x:str(x), data[257:261]))
+            self.router = '.'.join(map(lambda x:str(x), data[263:267]))
             dnsNB = int(data[268]/4)
             for i in range(0, 4 * dnsNB, 4):
                 self.DNS.append('.'.join(map(lambda x:str(x), data[269 + i :269 + i + 4])))
                 
     def printOffer(self):
-        key = ['DHCP Server', 'Offered IP address', 'subnet mask', 'lease time' , 'default gateway']
-        val = [self.DHCPServerIdentifier, self.offerIP, self.subnetMask, self.leaseTime, self.router]
-        for i in range(4):
-            print('{0:18s} : {1:15s}'.format(key[i], val[i]))
+        keys = ['DHCP Server', 'Offered IP address', 'default router', 'lease time' , 'subnet mask']
+        vals = [self.DHCPServerIdentifier, self.offerIP, self.router, self.leaseTime, self.subnetMask]
+        for i in range(len(keys)):
+            print('{0:18s} : {1:15s}'.format(keys[i], vals[i]))
         
         if self.DNS:
-            print('{0:18s}'.format('DNS Servers') + ' : ', end='')
-            print('{0:15s}'.format(self.DNS[0]))
+            print('{0:18s} : {1:15s}'.format('DNS Servers', self.DNS[0]))
         if len(self.DNS) > 1:
             for i in range(1, len(self.DNS)): 
                 print('{0:18s} {1:15s}'.format(' ', self.DNS[i])) 
@@ -98,7 +100,7 @@ class DHCPOffer:
 if __name__ == '__main__':
     if(os.geteuid() != 0) :
         exit('You must be root to run this program.')
-    parser = argparse.ArgumentParser(description='Command line parameters')
+    parser = argparse.ArgumentParser(description='send a DHCP request to DHCP server to see if it\'s up and running')
     parser.add_argument('-m', action='store', dest='mac_address', help='MAC address. Default the MAC of this host')
     parser.add_argument('-s', action='store', dest='dhcp_server_address', help='DHCP Server address. Default %s'%DEFAULT_DHCP_SERVER_ADDRESS)
     args = parser.parse_args()
@@ -111,29 +113,33 @@ if __name__ == '__main__':
     else :
         dhcp_server_address = DEFAULT_DHCP_SERVER_ADDRESS
 
-    dhcps = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    dhcps.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    start_time = time()
+    dhcp_client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    dhcp_client.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    dhcp_client.settimeout(WAIT_TIMEOUT)
     
     try:
-        dhcps.bind(('', DHCP_CLIENT_PORT))
+        dhcp_client.bind(('', DHCP_CLIENT_PORT))
     except Exception as e:
-        dhcps.close()
+        dhcp_client.close()
         exit('Can\'t bind dhcp client port %d '%DHCP_CLIENT_PORT)
  
     discoverPacket = DHCPDiscover()
-    dhcps.sendto(discoverPacket.buildPacket(my_mac_address), (dhcp_server_address, DHCP_SERVER_PORT))
+    dhcp_client.sendto(discoverPacket.buildPacket(my_mac_address), (dhcp_server_address, DHCP_SERVER_PORT))
     print('DHCP Discover sent to %s\nwaiting for reply...'%dhcp_server_address)
     
-    dhcps.settimeout(WAIT_TIMEOUT)
+    offer = DHCPOffer()    
     try:
         while True:
-            data = dhcps.recv(1024)
-            offer = DHCPOffer(data, discoverPacket.transactionID)
+            data = dhcp_client.recv(2048)
+            offer.setData(data, discoverPacket.transactionID)
             if offer.offerIP:
-                offer.printOffer()
                 break
     except socket.timeout as e:
         print(e)
     
-    dhcps.close()
+    dhcp_client.close()
+    end_time = time()
+    offer.printOffer()
+    print('{0:18s} : {1:8f}'.format( 'Requets time', end_time-start_time ))
     exit(0)
